@@ -46,7 +46,7 @@
                                         <absolute_minimum>-0.7</absolute_minimum>
                                         <relative_maximum>0</relative_maximum>
                                         <relative_minimum>-1000</relative_minimum>
-                                        <type>1</type>
+                                        <type>0</type>
                                     </scale>
                                     <topic>/imu_joint_states</topic>
                                     <type>sensor_msgs/JointState</type>
@@ -171,7 +171,7 @@
                                         <absolute_minimum>-0.7</absolute_minimum>
                                         <relative_maximum>0</relative_maximum>
                                         <relative_minimum>-1000</relative_minimum>
-                                        <type>1</type>
+                                        <type>0</type>
                                     </scale>
                                     <topic>/imu_joint_states</topic>
                                     <type>sensor_msgs/JointState</type>
@@ -298,7 +298,7 @@
                                         <absolute_minimum>-2.1</absolute_minimum>
                                         <relative_maximum>0</relative_maximum>
                                         <relative_minimum>-1000</relative_minimum>
-                                        <type>1</type>
+                                        <type>0</type>
                                     </scale>
                                     <topic>/imu_joint_states</topic>
                                     <type>sensor_msgs/JointState</type>
@@ -423,7 +423,7 @@
                                         <absolute_minimum>-2.1</absolute_minimum>
                                         <relative_maximum>0</relative_maximum>
                                         <relative_minimum>-1000</relative_minimum>
-                                        <type>1</type>
+                                        <type>0</type>
                                     </scale>
                                     <topic>/imu_joint_states</topic>
                                     <type>sensor_msgs/JointState</type>

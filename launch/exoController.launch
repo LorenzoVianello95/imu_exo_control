@@ -12,14 +12,14 @@
     </node>
 
     <!-- Launching the multi robot interaction node -->
-    <node name="x2_dyad" pkg="multi_robot_interaction" type="multi_robot_interaction" output="screen">
+    <!-- <node name="x2_dyad" pkg="multi_robot_interaction" type="multi_robot_interaction" output="screen">
         <rosparam command="load" file="$(find multi_robot_interaction)/param/robot_params.yaml" />
         <remap from="/custom_robot_state" to="/$(arg robot_name)/custom_robot_state" />
         <remap from="/desired_interaction_torque" to="/$(arg robot_name)/desired_interaction_torque" />
-    </node>
+    </node> -->
     
     <!-- Launching the emg reader node -->
-    <node name="emg_reader" pkg="imu_exo_control" type="emgReader.py" output="screen"/>
+    <!-- <node name="emg_reader" pkg="imu_exo_control" type="emgReader.py" output="screen"/> -->
 
     <!-- rqt_gui -->
     <group if="$(arg gui)">
