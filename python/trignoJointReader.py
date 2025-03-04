@@ -8,10 +8,13 @@ from math import degrees, radians
 from collections import deque
 from rospkg import RosPack
 import yaml
+import time
 
 from std_srvs.srv import Empty, EmptyResponse
 # Replace with your package name
 import os
+from CORC.msg import X2RobotState
+from RingBuffer import RingBuffer
 
 # imu placement (different from the one in the windows computer)
 # 1: left tight front, 2: left tight back, 3: left shank front
@@ -26,26 +29,28 @@ imuLocations = np.zeros(numSensors)
 
 averagedIMUData = [0, 0, 0, 0]
 
-# * -------------------------------- Publishers -------------------------------- #
-# Joint state publisher
-jointStatePublisher = rospy.Publisher(
-    '/imu_joint_states', JointState, queue_size=10)
-
-# Publisher to exo joint states to test code
-# jointStatePublisher = rospy.Publisher('/X2_SRA_A/joint_states', JointState, queue_size=10)
+previousTempJointAngles = [0, 0, 0, 0, 0]
+prevTime = time.time()
+connectionLost = True
+timeLastLostOrRestoredConnection = time.time()
+# ringBuffer for filtering velocities
+history_velocities = RingBuffer(100)
 
 # * ------------------------------ Global messages ----------------------------- #
 # Joint state message
-imujointStateMessage = JointState()
-imujointStateMessage.name = ["left_hip_joint", "left_knee_joint",
-                             "right_hip_joint", "right_knee_joint",
-                             "world_to_backpack"]
-imujointStateMessage.position = [0, 0, 0, 0, 0]
-imujointStateMessage.velocity = [0, 0, 0, 0, 0]
-imujointStateMessage.effort = [0, 0, 0, 0, 0]
+imujointStateMessage = X2RobotState()
+imujointStateMessage.joint_state.name = ["left_hip_joint", "left_knee_joint",
+                                         "right_hip_joint", "right_knee_joint",
+                                         "world_to_backpack"]
+imujointStateMessage.joint_state.position = [0, 0, 0, 0, 0]
+imujointStateMessage.joint_state.velocity = [0, 0, 0, 0, 0]
+imujointStateMessage.joint_state.effort = [0, 0, 0, 0, 0]
+imujointStateMessage.link_lengths = [0, 0, 0, 0, 0]
+imujointStateMessage.gait_state = 0
 
 # List of current exo joint data
-exoJointDataCUR = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
+realExoPosition = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
+realExoVelocities = np.array([0.0, 0.0, 0.0, 0.0, 0.0])
 
 # * -------------------- Global constants from the yaml file ------------------- #
 x2ParamsFileName = RosPack().get_path('CORC') + '/config/x2_params.yaml'
@@ -91,10 +96,11 @@ def handle_save_yaml(req):
             matrices["imu "+str(i)] = (np.eye(3).tolist())
         else:
             # Convert NumPy array to list
+            print(matrix)
             matrices["imu "+str(i)] = (matrix.tolist())
 
     save_yaml(matrices)  # Save back to file
-    RABlist_f = RABlist
+    RA0list_f = RABlist
     return []
 
 
@@ -104,18 +110,13 @@ therapist_patient_offset = np.zeros(5)
 
 def set_offset_th_patient(req):
     global therapist_patient_offset, signedError
-    therapist_patient_offset = np.array(
-        [signedError[i][-1]*np.pi/180 for i in range(5)])
+    therapist_patient_offset[0] = signedError[0][-1]
+    therapist_patient_offset[2] = signedError[2][-1]
     print("offset therapist patient: ", therapist_patient_offset)
     return []
 
 
-# * ----------------------- List of data for exo and imus ---------------------- #
-# Order of the data lists
-# # left thigh, left calf, right thigh, right calf, back
-exoJointData = [deque(maxlen=100) for i in range(5)]  # From the exo
-jointStateData = [deque(maxlen=100) for i in range(5)]  # From IMUs
-signedError = [deque(maxlen=100) for i in range(5)]  # Error between the two
+signedError = [deque(maxlen=2) for i in range(5)]  # Error between the two
 
 # * ----------------------------- Helper functions ----------------------------- #
 # Creating a rotation matrix from a quaternion
@@ -150,10 +151,11 @@ def getSagittalAngle(imuData: List[trignoIMU], curReading: int):
     # Normalizing the quaternion
     norm = np.linalg.norm([orientation.x, orientation.y,
                           orientation.z, orientation.w])
-    orientation.x = orientation.x / norm
-    orientation.y = orientation.y / norm
-    orientation.z = orientation.z / norm
-    orientation.w = orientation.w / norm
+    if norm > 0:
+        orientation.x = orientation.x / norm
+        orientation.y = orientation.y / norm
+        orientation.z = orientation.z / norm
+        orientation.w = orientation.w / norm
 
     # Transforming the quaternion to a rotation matrix
     R0B = rotMatrixFromQuat(orientation)
@@ -177,7 +179,7 @@ def getSagittalAngle(imuData: List[trignoIMU], curReading: int):
             sagittalAngle = np.arcsin(RAB[2, 2])
 
     # Store the rotation matrix in the list for future use
-    RABlist[imuData.imu_id - 1] = 1
+    RABlist[imuData.imu_id - 1] = RAB
 
     return sagittalAngle
 
@@ -197,18 +199,6 @@ def failsafes(tempJointAngles: List[float]):
         tempJointAngles[3] = max(tempJointAngles[3], radians(jointLimits[2]))
         tempJointAngles[3] = min(tempJointAngles[3], radians(jointLimits[3]))
 
-    elif numSensors == 5:
-        for i in range(4):
-            if i % 2 == 0:
-                imujointStateMessage.position[i] = max(
-                    imujointStateMessage.position[i], radians(jointLimits[0]))
-                imujointStateMessage.position[i] = min(
-                    imujointStateMessage.position[i], radians(jointLimits[1]))
-            else:
-                imujointStateMessage.position[i] = max(
-                    imujointStateMessage.position[i], radians(jointLimits[2]))
-                imujointStateMessage.position[i] = min(
-                    imujointStateMessage.position[i], radians(jointLimits[3]))
 
 # * --------------------------------- Callbacks -------------------------------- #
 # IMU callback function
@@ -217,16 +207,21 @@ def failsafes(tempJointAngles: List[float]):
 def imu_callback(IMUDataList: trignoMultiIMU):
     # ? Getting global variables
     global imuLocations, therapist_patient_offset
-    global jointStateData, lineListJointStates
-    global exoJointData, lineListExo, exoJointDataCUR
-    global signedError, lineListError
-    global drawCount, timeList
-    global figError, figJoint
-    global exoDataList, delayList
+    global realExoPosition
+    global signedError,  history_velocities, connectionLost, timeLastLostOrRestoredConnection
+    global exoDataList,  previousTempJointAngles, prevTime, imujointStateMessage
+
+    currentTime = time.time()
+    dt = currentTime - prevTime
+    prevTime = currentTime
+    if connectionLost:
+        connectionLost = False
+        print("Connection Restored!")
+        timeLastLostOrRestoredConnection = time.time()
 
     # * ----------------------- Updating the joint states ---------------------- #
     # Updating the joint state message time
-    imujointStateMessage.header.stamp = rospy.Time.now()
+    imujointStateMessage.joint_state.header.stamp = rospy.Time.now()
 
     # Declaring orderedList
     orderedIMUList = []
@@ -240,6 +235,7 @@ def imu_callback(IMUDataList: trignoMultiIMU):
 
     # Getting the number of readings in this packet
     numReadings = len(orderedIMUList[0].q)
+    sumtempJointAngles = [0, 0, 0, 0, 0]
 
     # Looping through the number of readings
     for curReading in range(numReadings):
@@ -254,12 +250,12 @@ def imu_callback(IMUDataList: trignoMultiIMU):
         # If there are 8 IMUs, then average the angles on the same section of the leg
         if (len(IMUDataList.trigno_imu) == 8 or len(IMUDataList.trigno_imu) == 10):
             # Average the sensors angles on the same section of the leg
-            # (imuLocations[0]+ imuLocations[1]) / 2
-            averagedIMUData[0] = imuLocations[1]
+            #
+            averagedIMUData[0] = (imuLocations[0] + imuLocations[1]) / 2
             averagedIMUData[2] = (imuLocations[4] + imuLocations[5]) / 2
             # Only done for the thighs because calves only have 1 sensor on them
             # (imuLocations[2]+ imuLocations[3]) / 2
-            averagedIMUData[1] = imuLocations[3]
+            averagedIMUData[1] = (imuLocations[2] + imuLocations[3]) / 2
             averagedIMUData[3] = -(imuLocations[7] + imuLocations[8]) / 2
 
             # Set the imu backpack joint angle to = the exo backpack joint angle for testing
@@ -274,30 +270,65 @@ def imu_callback(IMUDataList: trignoMultiIMU):
         tempJointAngles[3] = averagedIMUData[3] - averagedIMUData[2]
 
         tempJointAngles = tempJointAngles - therapist_patient_offset
+
+        # smooth the tempJointAngles with the previous joint angle if
+        # there had been a transition from lost connection to restored in the last second
+        if currentTime - timeLastLostOrRestoredConnection < 1:
+            for i in range(5):
+                tempJointAngles[i] = 0.9 * \
+                    previousTempJointAngles[i] + 0.1 * tempJointAngles[i]
+
         # Implimenting failsafes for the joint angles
-        # failsafes(tempJointAngles)
+        failsafes(tempJointAngles)
+
+        if dt > 0 and dt > 0.001:
+            history_velocities.append(
+                (np.array(tempJointAngles) - np.array(previousTempJointAngles)) / dt)
+        else:
+            history_velocities.append(np.zeros(5))
+        filtered_velocities = np.mean(history_velocities.get(), axis=0)
 
         # Calulating the joint velocities
         for i in range(5):
-            imujointStateMessage.velocity[i] = tempJointAngles[i] - \
-                imujointStateMessage.position[i]
+            sumtempJointAngles[i] += tempJointAngles[i]
+            # Updating the joint state message
+            imujointStateMessage.joint_state.position[i] = tempJointAngles[i]
 
-        # Updating the joint state message
-        imujointStateMessage.position = tempJointAngles
-
-        # Publish the joint state message
-        jointStatePublisher.publish(imujointStateMessage)
-
-        # Perform actions for each of the 5 joints
-        for i in range(5):
-            # Append the data to the data arrays
-            jointStateData[i].append(degrees(imujointStateMessage.position[i]))
-
-            # Getting the current exo data
-            exoJointData[i].append(degrees(exoJointDataCUR[i]))
+            imujointStateMessage.joint_state.velocity[i] = filtered_velocities[i]
 
             # Calculate the signed error
-            signedError[i].append(jointStateData[i][-1] - exoJointData[i][-1])
+            signedError[i].append(tempJointAngles[i] - realExoPosition[i])
+
+    for i in range(5):
+        previousTempJointAngles[i] = sumtempJointAngles[i]/numReadings
+
+
+"""Lost connection function update the commanded position using the actual exo position"""
+
+
+def lostConnectionTransparency():
+    # ? Getting global variables
+    global exoJointData, realExoPosition, realExoVelocities
+    global signedError, history_velocities, connectionLost
+    global exoDataList, previousTempJointAngles, prevTime, imujointStateMessage
+
+    if not (connectionLost):
+        # * ----------------------- Updating the joint states ---------------------- #
+        # Updating the joint state message time
+        imujointStateMessage.joint_state.header.stamp = rospy.Time.now()
+
+        currentTime = time.time()
+        dt = currentTime - prevTime
+        prevTime = currentTime
+
+        # Calulating the joint velocities
+        for i in range(5):
+            # Updating the joint state message
+            imujointStateMessage.joint_state.position[i] = realExoPosition[i]
+            imujointStateMessage.joint_state.velocity[i] = realExoVelocities[i]
+            previousTempJointAngles[i] = realExoPosition[i]
+
+        history_velocities.append(realExoVelocities)
 
 
 # Creating a list of data points to sync up the IMU and exo data
@@ -307,7 +338,7 @@ exoDataList = deque(maxlen=numDelayedValues)
 
 def realExoCallback(jointState: JointState):
     # ? Getting global variables
-    global exoJointDataCUR
+    global realExoPosition, realExoVelocities
     global delay, prevTime
     global exoDataList, numDelayedValues
 
@@ -320,13 +351,15 @@ def realExoCallback(jointState: JointState):
     for i in range(5):
         # Updating the current data, then only the most recent data is used in graphing
         # This is to sync up the number of data points from the IMU to the exo
-        exoJointDataCUR[i] = jointState.position[i]
+        realExoPosition[i] = jointState.position[i]
+        realExoVelocities[i] = jointState.velocity[i]
 
     # Append the exo data to the deque
     exoDataList.append(jointState.position)
 
 
 def main():
+    global imujointStateMessage, prevTime, connectionLost
     # Initialize the node
     rospy.init_node('trigno_joint_reader')
 
@@ -343,7 +376,34 @@ def main():
                   Empty, set_offset_th_patient)
 
     # Real exo joint state subscriber
-    rospy.Subscriber('/joint_states', JointState, realExoCallback)
+    rospy.Subscriber('/X2_SRA_A/joint_states', JointState, realExoCallback)
+
+    # * -------------------------------- Publishers -------------------------------- #
+    # Joint state publisher
+    # jointStatePublisher = rospy.Publisher(
+    #     '/imu_joint_states', JointState, queue_size=10)
+
+    # Publisher to exo joint states to test code
+    jointStatePublisher = rospy.Publisher(
+        '/X2_SRA_B/custom_robot_state', X2RobotState, queue_size=10)
+    rate = rospy.Rate(300)  # hz
+    while not rospy.is_shutdown():
+
+        currentTime = time.time()
+        dt = currentTime - prevTime
+        if dt > 0.5 and not (connectionLost):
+            connectionLost = True
+            for i in range(10):
+                print("---------------------------------------------")
+            print("lost connection with EMG server sending actual exo position (suggested to stop the experiment and wait)")
+
+        if connectionLost:
+            # update the imu message using the actual robot position and velocities
+            lostConnectionTransparency()
+
+        # Publish the joint state message
+        jointStatePublisher.publish(imujointStateMessage)
+        rate.sleep()
 
     rospy.spin()
 
