@@ -262,8 +262,9 @@ def imu_callback(IMUDataList: trignoMultiIMU):
             tempJointAngles[4] = imuLocations[9]
 
         # Hip joints are IMU angles - backpack angle
-        tempJointAngles[0] = averagedIMUData[0] - tempJointAngles[4]
-        tempJointAngles[2] = averagedIMUData[2] - tempJointAngles[4]
+        tempJointAngles[0] = averagedIMUData[0]  # - tempJointAngles[4]
+        tempJointAngles[2] = averagedIMUData[2]  # - tempJointAngles[4]
+        # print(tempJointAngles[4])
 
         # Knee joints are IMU angles - hip angles
         tempJointAngles[1] = averagedIMUData[1] - averagedIMUData[0]
